@@ -1,0 +1,33 @@
+# 見張り番: 現場用の固定版URLが開けるかを定期的に確認する。
+# 異常があるとこの実行が「失敗」になり、GitHubが登録メールへ自動で知らせる(無料)。
+name: 見張り番
+on:
+  schedule:
+    - cron: '7 22,23,0,1,2,3,4,5,6,7,8,9,10 * * *'   # 日本時間 7:07〜19:07 に毎時
+  workflow_dispatch: {}
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 公開URLを確認
+        run: |
+          BASE="https://livmakers.github.io/yamada-picking"
+          fail=0
+          check() {  # $1=URL  $2=中に含まれているべき文字
+            ok=0
+            for i in 1 2 3; do
+              body=$(curl -fsSL --max-time 20 "$1" 2>/dev/null) && echo "$body" | grep -q -- "$2" && ok=1 && break
+              sleep 10
+            done
+            if [ $ok = 1 ]; then echo "OK   $1"; else echo "NG   $1  (開けない、または中身が違う)"; fail=1; fi
+          }
+          VER=$(curl -fsSL --max-time 20 "$BASE/versions.json" | python3 -c "import json,sys;print(json.loads(sys.stdin.buffer.read().decode('utf-8-sig'))['versions'][-1]['ver'])") || { echo "NG   versions.json が読めない"; exit 1; }
+          echo "最新の固定版: $VER"
+          check "$BASE/v/$VER/"               "<title>"
+          check "$BASE/v/$VER/app.js"         "APP_VER = '$VER'"
+          check "$BASE/v/$VER/sw.js"          "const VER = '$VER'"
+          check "$BASE/v/$VER/onefile.html"   "<title>"
+          check "$BASE/v/$VER/lib/jsQR.js"    "jsQR"
+          check "$BASE/v/$VER/style.css"      "--blue"
+          exit $fail
