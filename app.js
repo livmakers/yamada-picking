@@ -26,10 +26,11 @@
   const DEF_MASTER = [['4559','LL','CHA'],['4559','L','BRN'],['4559','L','CHA'],['4559','M','BEG'],['4559','M','WHT'],['4558','LL','BRN'],['4558','L','BRN'],['4558','L','CHA'],['4558','L','BEG']];
   const DEF_COLORS = { CHA:'チャコール', BRN:'ブラウン', BEG:'ベージュ', WHT:'ホワイト' };
   const SAMPLE_ORDERS = '店名,品番,サイズ,色,数量\nテストA店,4559,LL,CHA,3\nテストA店,4559,L,BRN,2\nテストA店,4558,L,CHA,4\nテストA店,4559,M,BEG,1\nテストB店,4559,LL,CHA,2\nテストB店,4558,LL,BRN,5\nテストB店,4559,M,WHT,3\nテストB店,4558,L,BEG,2\nテストC店,4559,L,CHA,6\nテストC店,4558,L,BRN,2\nテストC店,4559,L,BRN,1\nテストC店,4558,L,CHA,1';
+  const APP_VER = '2.0.0';
   const S = {
     master: [], colors: {}, colmap: { store: 1, hin: 2, size: 3, col: 4, qty: 5, header: 'auto' },
     orders: null, worker: '', assigned: [], picked: {}, syncUrl: '', syncLog: [], log: [],
-    selStore: '', single: false, view: 'home', exp: {}, lastBackup: null
+    selStore: '', single: false, view: 'home', exp: {}, lastBackup: null, pending: null, pendingTotal: ''
   };
   const persist = k => DB.set(k, S[k]);
 
@@ -87,7 +88,7 @@
   }
   function buildOrders(rows, src) {
     const cm = S.colmap, errs = [], need = {}, stores = [];
-    let start = 0, ok = 0, total = 0;
+    let start = 0, ok = 0, total = 0, fileQty = 0, errQty = 0, dup = 0; const seen = {};
     if (cm.header === 'yes') start = 1;
     else if (cm.header === 'auto' && rows[0] && !/^\d+$/.test(half(rows[0][cm.qty - 1]))) start = 1;
     for (let i = start; i < rows.length; i++) {
@@ -101,11 +102,13 @@
       if (!(qty >= 1)) pr.push('数量が数字でない');
       const key = keyOf(hin, size, col);
       if (!pr.length && S.master.length && !masterHas(key)) pr.push(nameOf(key) + ' は商品マスターにない');
-      if (pr.length) { errs.push(line + '行目: ' + pr.join('、')); continue; }
+      if (qty >= 1) fileQty += qty;   // ファイルの数量合計(読めた行すべて。あとで取込結果と突き合わせる)
+      if (pr.length) { if (qty >= 1) errQty += qty; errs.push(line + '行目: ' + pr.join('、')); continue; }
+      const sig = store + '|' + key + '|' + qty; if (seen[sig]) dup++; seen[sig] = 1;
       if (!need[store]) { need[store] = {}; stores.push(store); }
       need[store][key] = (need[store][key] || 0) + qty; ok++; total += qty;
     }
-    return { batch: uid(), loadedAt: Date.now(), file: src, need, stores, total, rowsOk: ok, errs: errs.slice(0, 100), errCount: errs.length };
+    return { batch: uid(), loadedAt: Date.now(), file: src, need, stores, total, rowsOk: ok, errs: errs.slice(0, 100), errCount: errs.length, fileQty, errQty, dup };
   }
   async function setOrders(o) {
     S.orders = o; S.picked = {}; S.assigned = S.assigned.filter(s => o.stores.indexOf(s) >= 0);
@@ -218,7 +221,7 @@
       const o = S.orders; let st = '受注: まだ取り込んでいません';
       if (o) st = '受注: ' + o.stores.length + '店 / 合計' + o.total + '枚(' + esc(o.file) + ' ' + fmt(o.loadedAt).slice(5, 16) + ')';
       return '<div class="card"><label class="fl">あなたのお名前(記録に残ります)</label><input type="text" id="inName" data-chg="name" value="' + esc(S.worker) + '" placeholder="例: 山田"></div>' +
-        '<div class="status" style="margin:6px 4px">' + st + '</div>' +
+        '<div class="status" style="margin:6px 4px">' + st + '<br>アプリの版 ' + APP_VER + '(' + verKind() + ')</div>' +
         '<button class="btn gray" data-act="go" data-v="check">⓪ 朝の点検(始業前に押す)</button>' +
         '<button class="btn gray" data-act="go" data-v="import">① 受注を取り込む</button>' +
         '<button class="btn" data-act="go" data-v="pick">② 総量ピッキング(まとめて集める)</button>' +
@@ -240,9 +243,9 @@
     html() {
       const o = S.orders, cm = S.colmap;
       const numIn = (k, l) => '<div><label class="fl">' + l + '</label><input type="number" min="1" data-chg="colmap" data-k="' + k + '" value="' + cm[k] + '"></div>';
-      let res = '';
+      let res = pendingCard();
       if (o) {
-        res = '<div class="card"><div class="big ok">' + o.stores.length + '店 / ' + o.rowsOk + '行 / 合計' + o.total + '枚</div><div class="status">' + esc(o.file) + '</div>' +
+        res += '<div class="card"><div class="status">いま使っている受注</div><div class="big ok">' + o.stores.length + '店 / ' + o.rowsOk + '行 / 合計' + o.total + '枚</div><div class="status">' + esc(o.file) + '</div>' +
           (o.errCount ? '<div class="ng" style="margin-top:8px;font-size:17px"><b>取り込めなかった行が' + o.errCount + '件あります</b><br>' + o.errs.map(esc).join('<br>') + '</div>' : '<div class="status ok">エラーはありません</div>') + '</div>';
       }
       return '<button class="btn green" data-act="sample">まず試す(テスト9点+ダミー3店)</button>' + res +
@@ -478,6 +481,7 @@
   // ---- 設定 ----
   V.settings = {
     title: '設定',
+    init() { loadVersions(); },
     html() {
       const st = S.orders ? '<div class="card"><b>担当の店(チェックした店だけ仕分け対象。全部外すと全店)</b>' +
         S.orders.stores.map(s => '<label style="display:flex;gap:12px;align-items:center;margin:10px 0;font-size:22px"><input type="checkbox" style="width:30px;height:30px" data-chg="assign" data-s="' + esc(s) + '"' + (S.assigned.indexOf(s) >= 0 ? ' checked' : '') + '>' + esc(s) + '</label>').join('') + '</div>' : '<p class="hint">受注を取り込むと、担当の店を選べます。</p>';
@@ -485,7 +489,8 @@
         '<div class="card"><b>記録の送信先(任意)</b><p class="hint">Googleスプレッドシート用のURL。空欄なら、スマホの中とCSVだけに記録します。電波がある時だけ自動で送ります。</p>' +
         '<input type="url" data-chg="syncurl" value="' + esc(S.syncUrl) + '" placeholder="https://script.google.com/macros/s/…/exec">' +
         '<button class="btn gray small" data-act="syncNow">いま送信する</button></div>' +
-        '<div class="card"><b>仕分けをやり直す</b><p class="hint">進捗を0に戻します(受注はそのまま。これまでの作業記録は残ります)。</p><button class="btn red small" data-act="resetProg">進捗をリセット</button></div>';
+        '<div class="card"><b>仕分けをやり直す</b><p class="hint">進捗を0に戻します(受注はそのまま。これまでの作業記録は残ります)。</p><button class="btn red small" data-act="resetProg">進捗をリセット</button></div>' +
+        '<div class="card"><b>アプリの版</b><div class="status">いま: ' + APP_VER + '(' + verKind() + ')</div><div id="vers" class="status">版の一覧を読み込み中…(電波が必要です)</div></div>';
     }
   };
 
@@ -617,6 +622,7 @@
     if (navigator.onLine) {
       try { const r = await fetch(location.pathname, { method: 'HEAD', cache: 'no-store' }), d = Date.parse(r.headers.get('Date')); if (d) { const df = Math.round((Date.now() - d) / 1000); add('時計', Math.abs(df) < 120 ? 'ok' : 'ng', Math.abs(df) < 120 ? 'ずれ' + df + '秒' : 'スマホの時計が' + df + '秒ずれています(記録の時刻が狂います)'); } } catch (e) {}
     }
+    add('アプリの版', verKind() === '最新版・テスト用' ? 'warn' : 'ok', APP_VER + '(' + verKind() + ')' + (verKind() === '最新版・テスト用' ? ' ← 現場では「固定版」のURLを使ってください(勝手に変わりません)' : ''));
     add('通信', 'ok', navigator.onLine ? '電波あり' : '電波なし(照合はこのまま続けられます)');
     add('画面の自動消灯防止', 'wakeLock' in navigator ? 'ok' : 'warn', 'wakeLock' in navigator ? '仕分け中は画面を消しません' : 'この端末では画面が暗くなることがあります');
     const lb = S.lastBackup;
@@ -642,6 +648,43 @@
   const logSys = m => { if (sysErr++ < 20) addLog({ kind: 'sys_err', errType: String(m).slice(0, 160) }); };
   window.addEventListener('error', e => logSys(e.message || 'error'));
   window.addEventListener('unhandledrejection', e => logSys((e.reason && e.reason.message) || 'promise'));
+
+  // ================= 第2弾: 取込の突き合わせ / 版の管理 =================
+  function pendingCard() {
+    const d = S.pending; if (!d) return '';
+    const recon = d.fileQty === d.total + d.errQty;
+    const exp = parseInt(half(S.pendingTotal), 10), hasExp = exp >= 1, expOk = hasExp && exp === d.total;
+    const bad = !recon || d.errCount > 0 || (hasExp && !expOk);
+    const per = d.stores.map(s => { let n = 0; Object.keys(d.need[s]).forEach(k => { n += d.need[s][k]; }); return '<tr><td>' + esc(s) + '</td><td class="n">' + n + '枚</td></tr>'; }).join('');
+    return '<div class="card" style="border:3px solid ' + (bad ? 'var(--red)' : 'var(--green)') + '"><div class="status">取り込み予定(まだ使われていません)</div>' +
+      '<div class="big">' + d.stores.length + '店 / ' + d.rowsOk + '行 / 合計' + d.total + '枚</div><div class="status">' + esc(d.file) + '</div>' +
+      '<table style="margin:10px 0"><tr><th>突き合わせ</th><th class="n">枚数</th></tr>' +
+      '<tr><td>ファイルに書いてある数量の合計</td><td class="n">' + d.fileQty + '</td></tr>' +
+      '<tr><td>取り込めた分</td><td class="n">' + d.total + '</td></tr>' +
+      '<tr><td>取り込めなかった行の分(' + d.errCount + '行)</td><td class="n ' + (d.errCount ? 'ng' : '') + '">' + d.errQty + '</td></tr>' +
+      '<tr><td><b>検算(合計=取込+未取込)</b></td><td class="n ' + (recon ? 'ok' : 'ng') + '"><b>' + (recon ? '✅ 一致' : '❌ 不一致') + '</b></td></tr></table>' +
+      '<label class="fl">受注書(紙・メール)に書いてある合計枚数(入れると照合します)</label>' +
+      '<input type="number" min="1" data-chg="ptotal" value="' + esc(S.pendingTotal) + '" placeholder="例: 32">' +
+      (hasExp ? '<div class="big ' + (expOk ? 'ok' : 'ng') + '" style="margin-top:6px">' + (expOk ? '✅ 受注書と一致' : '❌ 受注書と' + Math.abs(exp - d.total) + '枚違います') + '</div>' : '') +
+      (d.dup ? '<div class="ng" style="margin-top:8px;font-size:17px">⚠ 店・商品・数量が同じ行が' + d.dup + '件あります(二重に入っていませんか?)</div>' : '') +
+      '<table style="margin-top:10px"><tr><th>店</th><th class="n">合計</th></tr>' + per + '</table>' +
+      (d.errCount ? '<div class="ng" style="margin-top:8px;font-size:17px"><b>取り込めない行</b><br>' + d.errs.map(esc).join('<br>') + '</div>' : '') +
+      '<button class="btn ' + (bad ? 'red' : 'green') + '" data-act="commitPending">' + (bad ? '問題を承知でこの内容で確定' : 'この内容で確定') + '</button>' +
+      '<button class="btn gray small" data-act="cancelPending">やめる(ファイルを選び直す)</button></div>';
+  }
+  const verKind = () => location.protocol === 'file:' ? '単体版' : (/\/v\/[^/]+\//.test(location.pathname) ? '固定版' : '最新版・テスト用');
+  function repoBase() { const p = location.pathname, i = p.indexOf('/v/'); return location.origin + (i >= 0 ? p.slice(0, i + 1) : p.replace(/[^/]*$/, '')); }
+  async function loadVersions() {
+    const el = $('#vers'); if (!el) return;
+    if (location.protocol === 'file:') { el.textContent = '単体版では版の一覧は出ません'; return; }
+    try {
+      const j = await (await fetch(repoBase() + 'versions.json', { cache: 'no-store' })).json(), b = repoBase();
+      const e2 = $('#vers'); if (!e2) return;
+      e2.innerHTML = '<p class="hint">現場には「固定版」のURLを配ります。固定版は後から中身が変わりません。不具合が出たら、1つ前の版のURLに切り替えてください(作業記録は同じスマホなら引き継がれます)。</p>' +
+        j.versions.slice().reverse().map(v => '<div style="margin:8px 0"><a href="' + b + 'v/' + v.ver + '/" style="font-size:20px;font-weight:800">' + esc(v.ver) + (v.ver === APP_VER ? '(いま)' : '') + '</a> <span class="status">' + esc(v.date) + ' ' + esc(v.note) + '</span><br>' +
+          '<a href="' + b + 'v/' + v.ver + '/onefile.html" download="yamada-onefile-' + esc(v.ver) + '.html" class="status">単体版(1ファイル)を保存</a></div>').join('');
+    } catch (e) { const e2 = $('#vers'); if (e2) e2.textContent = '版の一覧を読み込めません(電波がある所で開いてください)'; }
+  }
 
   // ================= 操作の受け口 =================
   const A = {
@@ -670,6 +713,12 @@
     },
     print: () => printShip(),
     paper: () => { if (needOrders()) printPaper(); },
+    commitPending: async () => {
+      const hasProg = S.orders && S.log.some(x => x.batch === S.orders.batch && x.kind === 'ok' && !x.undone);
+      if (hasProg && !confirm('今の仕分けの進捗が0に戻ります(作業記録は残ります)。この受注に切り替えますか?')) return;
+      await setOrders(S.pending); S.pending = null; S.pendingTotal = ''; toast('受注を確定しました'); go('import');
+    },
+    cancelPending: () => { S.pending = null; S.pendingTotal = ''; go('import'); },
     backup: () => saveBackup(),
     manualKey: el => { onCode(el.dataset.k, 'manual'); },
     beep: () => { Snd.init(); Snd.ok(); setTimeout(Snd.err, 700); toast('「ピッ」のあと「ブー」が鳴れば正常です(鳴らない時は音量・マナーモードを確認)', 5000); },
@@ -702,6 +751,7 @@
     if (t.dataset.chg === 'name') { S.worker = t.value.trim(); persist('worker'); }
     else if (t.dataset.chg === 'selstore') { S.selStore = t.value; }
     else if (t.dataset.chg === 'single') { S.single = t.checked; }
+    else if (t.dataset.chg === 'ptotal') { S.pendingTotal = t.value; go('import'); }
     else if (t.dataset.chg === 'syncurl') { S.syncUrl = t.value.trim(); persist('syncUrl'); updNet(); }
     else if (t.dataset.chg === 'assign') { const s = t.dataset.s, i = S.assigned.indexOf(s); if (t.checked && i < 0) S.assigned.push(s); if (!t.checked && i >= 0) S.assigned.splice(i, 1); persist('assigned'); }
     else if (t.dataset.chg === 'colmap') { const k = t.dataset.k; S.colmap[k] = k === 'header' ? t.value : Math.max(1, parseInt(t.value, 10) || 1); persist('colmap'); }
@@ -725,9 +775,8 @@
           S.colors = {}; body.forEach(r => { const k = half(r[0]).toUpperCase(); if (k) S.colors[k] = String(r[1] || '').trim(); });
           await persist('colors'); toast('色コード表 ' + Object.keys(S.colors).length + '色を読み込みました');
         } else {
-          const hasProg = S.orders && S.log.some(x => x.batch === S.orders.batch && x.kind === 'ok' && !x.undone);
-          if (hasProg && !confirm('今の仕分けの進捗が0に戻ります(作業記録は残ります)。新しい受注を取り込みますか?')) return;
-          await setOrders(buildOrders(rows, f.name)); toast('受注を取り込みました');
+          S.pending = buildOrders(rows, f.name); S.pendingTotal = '';   // すぐには使わず、合計を突き合わせてから「確定」
+          toast('内容を確認してから「確定」を押してください', 4000);
         }
       } catch (err) { toast('読み込めませんでした: ' + err.message, 6000); }
       go('import');
@@ -748,6 +797,6 @@
     go('home');
     if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(() => {});
   }
-  window.__app = { restoreBackup, backupObj, runChecks, printPaper, S, onCode, A, go, candidates, doneMap, buildOrders, parseCSV, parseJaNum, getP: () => P, setQty: n => { P.qty = n; }, confirmQty };
+  window.__app = { APP_VER, restoreBackup, backupObj, runChecks, printPaper, S, onCode, A, go, candidates, doneMap, buildOrders, parseCSV, parseJaNum, getP: () => P, setQty: n => { P.qty = n; }, confirmQty };
   boot();
 })();
