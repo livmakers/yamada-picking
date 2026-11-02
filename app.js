@@ -29,7 +29,7 @@
   const S = {
     master: [], colors: {}, colmap: { store: 1, hin: 2, size: 3, col: 4, qty: 5, header: 'auto' },
     orders: null, worker: '', assigned: [], picked: {}, syncUrl: '', syncLog: [], log: [],
-    selStore: '', single: false, view: 'home', exp: {}
+    selStore: '', single: false, view: 'home', exp: {}, lastBackup: null
   };
   const persist = k => DB.set(k, S[k]);
 
@@ -193,7 +193,7 @@
   }
   function updNet() {
     const pend = S.log.filter(e => !e.synced).length;
-    $('#net').textContent = (navigator.onLine ? '● オンライン' : '○ 電波なし') + (S.syncUrl && pend ? '  未送信' + pend : '');
+    $('#net').textContent = (navigator.onLine ? '● オンライン' : '○ 電波なし') + (S.syncUrl && pend ? '  未送信' + pend : ''); updBk();
   }
   function needWorker() { if (!S.worker.trim()) { toast('先に「お名前」を入力してください'); const i = $('#inName'); if (i) i.focus(); return false; } return true; }
   function needOrders() { if (!S.orders) { toast('先に「受注を取り込む」をしてください'); return false; } return true; }
@@ -219,11 +219,16 @@
       if (o) st = '受注: ' + o.stores.length + '店 / 合計' + o.total + '枚(' + esc(o.file) + ' ' + fmt(o.loadedAt).slice(5, 16) + ')';
       return '<div class="card"><label class="fl">あなたのお名前(記録に残ります)</label><input type="text" id="inName" data-chg="name" value="' + esc(S.worker) + '" placeholder="例: 山田"></div>' +
         '<div class="status" style="margin:6px 4px">' + st + '</div>' +
+        '<button class="btn gray" data-act="go" data-v="check">⓪ 朝の点検(始業前に押す)</button>' +
         '<button class="btn gray" data-act="go" data-v="import">① 受注を取り込む</button>' +
         '<button class="btn" data-act="go" data-v="pick">② 総量ピッキング(まとめて集める)</button>' +
         '<button class="btn green" data-act="go" data-v="sort">③ 仕分け(QRを読んで店ごとに分ける)</button>' +
         '<button class="btn gray" data-act="go" data-v="progress">④ 進捗(店ごとの完了・未完了)</button>' +
         '<button class="btn gray" data-act="go" data-v="output">⑤ 出荷明細・作業記録を出す</button>' +
+        '<div class="card"><b>もしもの時</b><p class="hint">スマホが壊れた・電池切れ・QRが読めない時の備えです。</p>' +
+        '<button class="btn gray small" data-act="backup">バックアップを保存・共有(LINE等へ)</button>' +
+        '<label class="btn gray small">引き継ぎ(バックアップを読み込む)<input type="file" accept=".json,application/json" data-file="backup" hidden></label>' +
+        '<button class="btn gray small" data-act="paper"' + (S.orders ? '' : ' disabled') + '>紙の予備を印刷(総量ピッキング表+手書き用出荷明細)</button></div>' +
         '<button class="btn gray small" data-act="go" data-v="settings">設定(担当の店・記録の送信先)</button>' +
         '<button class="btn gray small" disabled>棚卸し(機能C・準備中)</button>';
     }
@@ -241,6 +246,7 @@
           (o.errCount ? '<div class="ng" style="margin-top:8px;font-size:17px"><b>取り込めなかった行が' + o.errCount + '件あります</b><br>' + o.errs.map(esc).join('<br>') + '</div>' : '<div class="status ok">エラーはありません</div>') + '</div>';
       }
       return '<button class="btn green" data-act="sample">まず試す(テスト9点+ダミー3店)</button>' + res +
+        (o ? '<button class="btn gray small" data-act="paper">紙の予備を印刷(総量ピッキング表+手書き用出荷明細)</button>' : '') +
         '<div class="card"><b>商品マスター</b><div class="status">' + (S.master.length ? S.master.length + '品 読込済(QR照合に使います)' : '未読込(読み込むと、未登録の商品QRも警告できます)') + '</div>' +
         '<label class="btn gray small">CSVを選ぶ<input type="file" accept=".csv,text/csv" data-file="master" hidden></label></div>' +
         '<div class="card"><b>色コード表</b><div class="status">' + Object.keys(S.colors).length + '色 読込済</div>' +
@@ -288,17 +294,17 @@
     init() {
       if (!S.orders) return;
       P = null; renderPanel();
-      Snd.init();
+      Snd.init(); keepAwake(true);
       const v = $('#cam');
       Scanner.start(v, onCode).catch(e => { const m = $('#camMsg'); if (m) m.innerHTML = '<span class="ng"><b>カメラを使えません。</b>ブラウザの「カメラを許可」を確認してください。下の入力欄でも試せます。</span>'; });
-      return () => { Scanner.stop(); P = null; };
+      return () => { Scanner.stop(); P = null; keepAwake(false); };
     }
   };
 
   function renderPanel() {
     const el = $('#panel'); if (!el) return;
     const vd = document.querySelector('.video'); if (vd) vd.style.display = P ? 'none' : '';   // 確認カード表示中はカメラ枠を畳み、確定ボタンを画面内に収める
-    if (!P) { el.innerHTML = '<div class="card" style="text-align:center"><div class="big">QRをかざしてください</div></div>'; return; }
+    if (!P) { el.innerHTML = '<div class="card" style="text-align:center"><div class="big">QRをかざしてください</div></div>' + manualList() + lastLine(); return; }
     const c = P.list.find(x => x.store === P.store) || P.list[0];
     const chips = P.list.length > 1 ? '<div class="status">この商品が必要な店(タップで切り替え)</div><div class="chips">' +
       P.list.map(x => '<button class="chip' + (x.store === P.store ? ' on' : '') + '" data-act="pickstore" data-s="' + esc(x.store) + '">' + esc(x.store) + ' 残' + x.remain + '</button>').join('') + '</div>' : '';
@@ -321,7 +327,7 @@
   function fail(type, msg, key) {
     Snd.err(); flash('err', msg); addLog({ kind: 'err', errType: type, key: key || '' });
   }
-  function onCode(text) {
+  function onCode(text, via) {
     if (!S.orders || P) return;
     text = String(text).trim();
     if (/^YMD-[SC]\d+$/.test(text)) return fail('badqr', 'これは棚/ケースのQRです。<br>仕分けでは商品のQRを読んでください');
@@ -346,7 +352,7 @@
       list = open.filter(x => S.assigned.indexOf(x.store) >= 0);
       if (!list.length) return fail('wrongStore', '担当外の店の商品です<br>' + open.map(x => esc(x.store)).join('、'), key);
     }
-    P = { key, list, store: list[0].store, qty: 1, heard: null, parsed: null };
+    P = { key, list, store: list[0].store, qty: 1, heard: null, parsed: null, via: via || 'scan' };
     Snd.beep(660, 0.08);
     flash('ok', '読み取りました', 1200);
     if (S.single && list.length === 1) return confirmQty(true);
@@ -362,7 +368,7 @@
     const voiceFixed = P.parsed != null && P.qty !== P.parsed;
     const input = auto ? 'auto1' : (P.parsed != null && P.qty === P.parsed ? 'voice' : 'button');
     const p = parseKey(P.key);
-    addLog({ kind: 'ok', key: P.key, hin: p.hin, size: p.size, col: p.col, store: P.store, qty: P.qty, input, voiceHeard: P.heard || '', voiceFixed });
+    addLog({ kind: 'ok', key: P.key, hin: p.hin, size: p.size, col: p.col, store: P.store, qty: P.qty, input, via: P.via, voiceHeard: P.heard || '', voiceFixed });
     const st = storeStat(P.store), name = P.store;
     P = null; renderPanel();
     if (st.done >= st.need) { Snd.done(); flash('ok', '◎ ' + esc(name) + ' 全部そろいました!', 4000); }
@@ -428,8 +434,9 @@
   }
   function metrics() {
     const by = {}, errs = {};
-    let vUse = 0, vFix = 0, vFail = 0;
+    let vUse = 0, vFix = 0, vFail = 0, manual = 0;
     S.log.forEach(e => {
+      if (e.kind === 'ok' && !e.undone && (e.via === 'manual' || e.via === 'typed')) manual++;
       if (e.kind === 'err') errs[e.errType] = (errs[e.errType] || 0) + 1;
       if (e.kind === 'voice_err') vFail++;
       if (e.kind === 'ok' && !e.undone) { if (e.input === 'voice' || e.voiceFixed) vUse++; if (e.voiceFixed) vFix++; }
@@ -443,7 +450,7 @@
       return { w, scans: by[w].scans, pcs: by[w].pcs, min: Math.round(act / 60000), perHour: act >= 60000 ? Math.round(by[w].pcs / hrs) : null };
     });
     const sl = S.syncLog, okS = sl.filter(x => x.ok), ms = okS.map(x => x.ms);
-    return { workers, errs, vUse, vFix, vFail, sync: { n: sl.length, fail: sl.length - okS.length, avg: ms.length ? Math.round(ms.reduce((a, b) => a + b, 0) / ms.length) : null, max: ms.length ? Math.max.apply(null, ms) : null } };
+    return { workers, errs, vUse, vFix, vFail, manual, sync: { n: sl.length, fail: sl.length - okS.length, avg: ms.length ? Math.round(ms.reduce((a, b) => a + b, 0) / ms.length) : null, max: ms.length ? Math.max.apply(null, ms) : null } };
   }
   const ERRNAME = { notInOrder: '注文にない商品', over: '数量オーバー', wrongStore: '店違い・担当外', badqr: 'QR違い', nomaster: 'マスター未登録' };
   V.output = {
@@ -452,8 +459,10 @@
       if (!S.orders) return '<p class="hint">受注が未取込です。</p>';
       const m = metrics();
       const wr = m.workers.map(x => '<tr><td>' + esc(x.w) + '</td><td class="n">' + x.pcs + '枚</td><td class="n">' + x.min + '分</td><td class="n">' + (x.perHour == null ? '—' : x.perHour + '/時') + '</td></tr>').join('');
-      const er = Object.keys(ERRNAME).map(k => '<tr><td>' + ERRNAME[k] + '</td><td class="n">' + (m.errs[k] || 0) + '回</td></tr>').join('');
+      const er = Object.keys(ERRNAME).map(k => '<tr><td>' + ERRNAME[k] + '</td><td class="n">' + (m.errs[k] || 0) + '回</td></tr>').join('') + '<tr><td>QRを使わず手入力で記録した回数</td><td class="n">' + m.manual + '回</td></tr>';
       return '<button class="btn green" data-act="print">出荷明細を印刷 / PDF保存</button>' +
+        '<button class="btn gray small" data-act="paper">紙の予備を印刷(総量ピッキング表+手書き用出荷明細)</button>' +
+        '<button class="btn gray small" data-act="backup">バックアップを保存・共有</button>' +
         '<button class="btn gray" data-act="csvShip">出荷明細(店別の最終数量)をCSVで保存</button>' +
         '<button class="btn gray" data-act="csvLog">作業記録(誰が・いつ・何を・何枚・どの店へ)をCSVで保存</button>' +
         '<div class="card"><b>試験運用の測定</b>' +
@@ -513,6 +522,127 @@
     if (manual) toast(ok ? pend.length + '件 送信しました' : '送信できませんでした(あとで自動で再送します)');
   }
 
+  // ================= もしもの備え =================
+  // --- QRが読めない時: 商品一覧から選ぶ ---
+  function manualList() {
+    const dm = doneMap(), rem = {};
+    visibleStores().forEach(s => Object.keys(S.orders.need[s]).forEach(k => { const r = S.orders.need[s][k] - (dm[s + '|' + k] || 0); if (r > 0) rem[k] = (rem[k] || 0) + r; }));
+    const keys = Object.keys(rem).sort();
+    return '<details class="card"><summary style="font-size:20px;font-weight:700">QRが読めない時はここ(商品を選ぶ)</summary>' +
+      (keys.length ? keys.map(k => '<button class="btn gray small" data-act="manualKey" data-k="' + k + '">' + esc(nameOf(k)) + '(残り ' + rem[k] + '枚)</button>').join('') : '<p class="hint">残りの商品はありません</p>') + '</details>';
+  }
+
+  // --- バックアップ / 引き継ぎ ---
+  const okCount = () => S.log.filter(e => e.kind === 'ok').length;
+  function updBk() {
+    const b = $('#bkbar'); if (!b) return;
+    const lb = S.lastBackup, unsaved = okCount() - (lb ? lb.count : 0);
+    const synced = S.syncUrl && !S.log.some(e => !e.synced && e.kind === 'ok');
+    const stale = !lb || Date.now() - lb.ts > 30 * 60000;
+    if (S.view === 'check' || !(unsaved > 0 && stale) || synced) { b.hidden = true; return; }
+    b.innerHTML = '⚠ 記録' + unsaved + '件が、まだ別の場所に保存されていません<br><button class="chip" data-act="backup">いま保存・共有</button>';
+    b.hidden = false;
+  }
+  function backupObj() { return { app: 'yamada-picking', v: 1, ts: Date.now(), worker: S.worker, master: S.master, colors: S.colors, colmap: S.colmap, orders: S.orders, assigned: S.assigned, picked: S.picked, log: S.log }; }
+  async function saveBackup() {
+    const name = 'yamada_backup_' + fmt(Date.now()).replace(/[-: ]/g, '').slice(0, 12) + '_' + (S.worker || 'noname') + '.json';
+    const text = JSON.stringify(backupObj()); let done = false;
+    try {
+      const f = new File([text], name, { type: 'application/json' });
+      if (navigator.canShare && navigator.canShare({ files: [f] })) { await navigator.share({ files: [f], title: 'ヤマダ出荷バックアップ' }); done = true; }
+    } catch (e) { if (e && e.name === 'AbortError') { toast('保存をやめました'); return; } }
+    if (!done) {
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    }
+    S.lastBackup = { ts: Date.now(), count: okCount() }; persist('lastBackup'); updBk();
+    toast('バックアップを保存しました(' + name + ')', 5000);
+  }
+  async function restoreBackup(o) {
+    if (!o || o.app !== 'yamada-picking' || !Array.isArray(o.log)) throw new Error('ヤマダ出荷のバックアップではありません');
+    const same = !!(S.orders && o.orders && S.orders.batch === o.orders.batch);
+    if (!same && S.orders && S.log.some(x => x.batch === S.orders.batch && x.kind === 'ok' && !x.undone)) {
+      if (!confirm('今の仕分けとは別の受注のバックアップです。今の進捗は引き継ぎ内容に置き換わります(作業記録は残ります)。続けますか?')) return null;
+    }
+    const byId = {}; S.log.forEach(e => { byId[e.id] = e; });
+    let added = 0;
+    o.log.forEach(e => {
+      const c = byId[e.id];
+      if (!c) { e.synced = false; S.log.push(e); byId[e.id] = e; DB.putLog(e); added++; }
+      else if (e.undone && !c.undone) { c.undone = true; c.synced = false; DB.putLog(c); }
+    });
+    if (o.orders) { S.orders = o.orders; S.picked = Object.assign({}, o.picked || {}, same ? S.picked : {}); if (!same) S.assigned = o.assigned || []; }
+    if (o.master && o.master.length) S.master = o.master;
+    if (o.colors && Object.keys(o.colors).length) S.colors = o.colors;
+    if (o.colmap) S.colmap = o.colmap;
+    for (const k of ['master', 'colors', 'colmap', 'orders', 'assigned', 'picked']) await persist(k);
+    return { added, same };
+  }
+
+  // --- 紙の予備(手書きで出荷を続けるための印刷物) ---
+  function printPaper() {
+    const tot = {};
+    S.orders.stores.forEach(s => Object.keys(S.orders.need[s]).forEach(k => { tot[k] = (tot[k] || 0) + S.orders.need[s][k]; }));
+    let h = '<div class="pg"><h2>総量ピッキング表(紙の予備)</h2><div>' + fmt(Date.now()) + ' / 受注: ' + esc(S.orders.file) + '</div><table style="margin-top:8px"><tr><th>済</th><th>品番</th><th>サイズ</th><th>色</th><th class="n">合計</th></tr>' +
+      Object.keys(tot).sort().map(k => { const p = parseKey(k); return '<tr><td style="width:14mm">☐</td><td>' + p.hin + '</td><td>' + p.size + '</td><td>' + esc(colorName(p.col)) + '</td><td class="n">' + tot[k] + '</td></tr>'; }).join('') + '</table></div>';
+    h += S.orders.stores.map(s => '<div class="pg"><h2>出荷明細(手書き用) — ' + esc(s) + '</h2><div>' + fmt(Date.now()) + ' / 受注: ' + esc(S.orders.file) + '</div>' +
+      '<table style="margin-top:8px"><tr><th>品番</th><th>サイズ</th><th>色</th><th class="n">注文</th><th class="n" style="width:26mm">実績(手書き)</th><th>メモ</th></tr>' +
+      Object.keys(S.orders.need[s]).sort().map(k => { const p = parseKey(k); return '<tr style="height:11mm"><td>' + p.hin + '</td><td>' + p.size + '</td><td>' + esc(colorName(p.col)) + '</td><td class="n">' + S.orders.need[s][k] + '</td><td></td><td></td></tr>'; }).join('') +
+      '</table><p style="margin-top:14mm">確認者 ______________ 　日時 ______________</p></div>').join('');
+    $('#printArea').innerHTML = h; setTimeout(() => window.print(), 50);
+  }
+
+  // --- 朝の点検 ---
+  async function runChecks() {
+    const R = [], add = (name, st, msg) => R.push({ name, st, msg });
+    try {
+      await DB.set('_t', Date.now()); const v = await DB.get('_t');
+      add('スマホ内の保存', DB.db && v ? 'ok' : 'warn', DB.db && v ? '保存できます' : '一時保存のみです(ブラウザを閉じると消えます。プライベートモードを避けてください)');
+    } catch (e) { add('スマホ内の保存', 'ng', '保存できません'); }
+    try {
+      if (navigator.storage && navigator.storage.estimate) { const e = await navigator.storage.estimate(), free = (e.quota - e.usage) / 1048576; add('空き容量', free > 200 ? 'ok' : free > 50 ? 'warn' : 'ng', '約' + Math.round(free) + 'MB'); }
+      if (navigator.storage && navigator.storage.persisted) { const p = await navigator.storage.persisted(); add('データの自動削除対策', p ? 'ok' : 'warn', p ? '保護されています' : '容量不足の時に消される可能性があります。「ホーム画面に追加」すると安全です'); }
+    } catch (e) {}
+    add('受注データ', S.orders ? (new Date(S.orders.loadedAt).toDateString() === new Date().toDateString() ? 'ok' : 'warn') : 'ng',
+      S.orders ? S.orders.stores.length + '店 / ' + S.orders.total + '枚(' + fmt(S.orders.loadedAt).slice(5, 16) + ' 取込)' + (new Date(S.orders.loadedAt).toDateString() === new Date().toDateString() ? '' : ' ← 今日の受注ですか?') : '取り込まれていません');
+    add('商品マスター', S.master.length ? 'ok' : 'warn', S.master.length ? S.master.length + '品' : '未読込(未登録商品の警告が出ません)');
+    let sw = false; try { sw = !!(navigator.serviceWorker && navigator.serviceWorker.controller); } catch (e) {}
+    add('電波なしで開く準備', sw ? 'ok' : 'warn', sw ? '準備できています' : 'まだです。電波のある所でこのページを開き直してください');
+    try {
+      const devs = navigator.mediaDevices ? (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput') : [];
+      if (!devs.length) add('カメラ', 'ng', 'カメラが見つかりません(手入力で続けられます)');
+      else { const st = await navigator.mediaDevices.getUserMedia({ video: true }); st.getTracks().forEach(t => t.stop()); add('カメラ', 'ok', '使えます'); }
+    } catch (e) { add('カメラ', 'ng', 'カメラが許可されていません(ブラウザの設定でカメラを許可してください)'); }
+    try { if (navigator.getBattery) { const b = await navigator.getBattery(), lv = Math.round(b.level * 100); add('電池', b.charging || lv >= 50 ? 'ok' : lv >= 20 ? 'warn' : 'ng', lv + '%' + (b.charging ? '(充電中)' : '')); } } catch (e) {}
+    if (navigator.onLine) {
+      try { const r = await fetch(location.pathname, { method: 'HEAD', cache: 'no-store' }), d = Date.parse(r.headers.get('Date')); if (d) { const df = Math.round((Date.now() - d) / 1000); add('時計', Math.abs(df) < 120 ? 'ok' : 'ng', Math.abs(df) < 120 ? 'ずれ' + df + '秒' : 'スマホの時計が' + df + '秒ずれています(記録の時刻が狂います)'); } } catch (e) {}
+    }
+    add('通信', 'ok', navigator.onLine ? '電波あり' : '電波なし(照合はこのまま続けられます)');
+    add('画面の自動消灯防止', 'wakeLock' in navigator ? 'ok' : 'warn', 'wakeLock' in navigator ? '仕分け中は画面を消しません' : 'この端末では画面が暗くなることがあります');
+    const lb = S.lastBackup;
+    add('バックアップ', lb || !okCount() ? 'ok' : 'warn', lb ? fmt(lb.ts).slice(5, 16) + ' に保存' : (okCount() ? 'まだ保存していません' : '記録なし'));
+    const ng = R.filter(x => x.st === 'ng').length, wn = R.filter(x => x.st === 'warn').length;
+    addLog({ kind: 'check', errType: (ng ? 'NG' + ng : wn ? 'WARN' + wn : 'OK') + ' ' + R.filter(x => x.st !== 'ok').map(x => x.name).join(',') });
+    const box = $('#chk'); if (!box) return;
+    box.innerHTML = '<div class="card"><div class="huge ' + (ng ? 'ng' : 'ok') + '">' + (ng ? '❌ 直してください' : wn ? '⚠️ 注意あり' : '✅ 始められます') + '</div>' +
+      (ng ? '<p class="hint">直せない時は、予備のスマホか紙の予備を使ってください。</p>' : '') + '</div>' +
+      R.map(x => '<div class="card"><div class="row"><div class="big" style="flex:none;width:2em">' + (x.st === 'ok' ? '✅' : x.st === 'warn' ? '⚠️' : '❌') + '</div><div><b>' + esc(x.name) + '</b><div class="status">' + esc(x.msg) + '</div></div></div></div>').join('');
+  }
+  V.check = {
+    title: '朝の点検',
+    html() { return '<div id="chk"><p class="hint">点検しています…(カメラの許可を聞かれたら「許可」)</p></div><button class="btn gray small" data-act="beep">🔊 音を鳴らして確かめる</button><button class="btn small" data-act="go" data-v="check">もう一度点検する</button>'; },
+    init() { updBk(); runChecks(); }
+  };
+
+  // --- 画面を消さない(仕分け中) / 想定外エラーの自動記録 ---
+  let wl = null;
+  async function keepAwake(on) { try { if (on && navigator.wakeLock) wl = await navigator.wakeLock.request('screen'); else if (wl) { wl.release(); wl = null; } } catch (e) {} }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.view === 'sort') keepAwake(true); });
+  let sysErr = 0;
+  const logSys = m => { if (sysErr++ < 20) addLog({ kind: 'sys_err', errType: String(m).slice(0, 160) }); };
+  window.addEventListener('error', e => logSys(e.message || 'error'));
+  window.addEventListener('unhandledrejection', e => logSys((e.reason && e.reason.message) || 'promise'));
+
   // ================= 操作の受け口 =================
   const A = {
     go: el => { const v = el.dataset.v; if ((v === 'pick' || v === 'sort' || v === 'progress' || v === 'output') && !needOrders()) return; if ((v === 'pick' || v === 'sort') && !needWorker()) return; go(v); },
@@ -525,7 +655,7 @@
     },
     ptoggle: el => { const k = el.dataset.k; S.picked[k] = !S.picked[k]; persist('picked'); go('pick'); },
     pexp: el => { const s = el.dataset.s; S.exp[s] = !S.exp[s]; go('progress'); },
-    manual: () => { const i = $('#manual'); if (i && i.value.trim()) { Snd.init(); onCode(i.value.trim().toUpperCase()); i.value = ''; } },
+    manual: () => { const i = $('#manual'); if (i && i.value.trim()) { Snd.init(); onCode(i.value.trim().toUpperCase(), 'typed'); i.value = ''; } },
     pickstore: el => { P.store = el.dataset.s; renderPanel(); },
     setq: el => { P.qty = +el.dataset.n; renderPanel(); },
     incq: () => { P.qty = Math.min(999, P.qty + 1); renderPanel(); },
@@ -539,17 +669,21 @@
       if (!e) return; e.undone = true; e.synced = false; DB.putLog(e); Snd.beep(500, 0.15); flash('ok', '取り消しました: ' + esc(nameOf(e.key)) + ' ' + e.qty + '枚(' + esc(e.store) + ')', 3000); renderPanel(); trySync();
     },
     print: () => printShip(),
+    paper: () => { if (needOrders()) printPaper(); },
+    backup: () => saveBackup(),
+    manualKey: el => { onCode(el.dataset.k, 'manual'); },
+    beep: () => { Snd.init(); Snd.ok(); setTimeout(Snd.err, 700); toast('「ピッ」のあと「ブー」が鳴れば正常です(鳴らない時は音量・マナーモードを確認)', 5000); },
     csvShip: () => download('出荷明細_' + fmt(Date.now()).replace(/[: ]/g, '').slice(0, 12) + '.csv', toCSV(shipRows())),
     csvLog: () => {
-      const rows = [['日時', '作業者', '結果', '店名', '品番', 'サイズ', '色コード', '数量', '入力方法', '音声の聞き取り', '音声を直した', 'エラー種別', '取消', 'ID']];
-      S.log.slice().sort((a, b) => a.ts - b.ts).forEach(e => rows.push([fmt(e.ts), e.worker, e.kind, e.store || '', e.hin || '', e.size || '', e.col || '', e.qty || '', e.input || '', e.voiceHeard || '', e.voiceFixed ? '○' : '', e.errType || '', e.undone ? '○' : '', e.id]));
+      const rows = [['日時', '作業者', '結果', '店名', '品番', 'サイズ', '色コード', '数量', '入力方法', '読み取り方法(scan/manual/typed)', '音声の聞き取り', '音声を直した', 'エラー種別', '取消', 'ID']];
+      S.log.slice().sort((a, b) => a.ts - b.ts).forEach(e => rows.push([fmt(e.ts), e.worker, e.kind, e.store || '', e.hin || '', e.size || '', e.col || '', e.qty || '', e.input || '', e.via || '', e.voiceHeard || '', e.voiceFixed ? '○' : '', e.errType || '', e.undone ? '○' : '', e.id]));
       download('作業記録_' + fmt(Date.now()).replace(/[: ]/g, '').slice(0, 12) + '.csv', toCSV(rows));
     },
     csvMetrics: () => {
       const m = metrics(), rows = [['項目', '値', '補足']];
       m.workers.forEach(x => { rows.push(['作業者 ' + x.w + ' 枚数', x.pcs, '']); rows.push(['作業者 ' + x.w + ' 作業分', x.min, '操作間隔5分以内']); rows.push(['作業者 ' + x.w + ' 枚/時', x.perHour == null ? '' : x.perHour, '']); });
       Object.keys(ERRNAME).forEach(k => rows.push(['読み取りミス ' + ERRNAME[k], m.errs[k] || 0, '']));
-      rows.push(['音声 使用', m.vUse, '']); rows.push(['音声 聞き間違い', m.vFix, '数字を直した回数']); rows.push(['音声 失敗', m.vFail, '']);
+      rows.push(['手入力で記録した回数', m.manual, 'QRを使わなかった回数']); rows.push(['音声 使用', m.vUse, '']); rows.push(['音声 聞き間違い', m.vFix, '数字を直した回数']); rows.push(['音声 失敗', m.vFail, '']);
       rows.push(['通信 送信回数', m.sync.n, '']); rows.push(['通信 失敗', m.sync.fail, '']); rows.push(['通信 平均ms', m.sync.avg == null ? '' : m.sync.avg, '']); rows.push(['通信 最大ms', m.sync.max == null ? '' : m.sync.max, '']);
       download('測定記録_' + fmt(Date.now()).replace(/[: ]/g, '').slice(0, 12) + '.csv', toCSV(rows));
     },
@@ -571,6 +705,13 @@
     else if (t.dataset.chg === 'syncurl') { S.syncUrl = t.value.trim(); persist('syncUrl'); updNet(); }
     else if (t.dataset.chg === 'assign') { const s = t.dataset.s, i = S.assigned.indexOf(s); if (t.checked && i < 0) S.assigned.push(s); if (!t.checked && i >= 0) S.assigned.splice(i, 1); persist('assigned'); }
     else if (t.dataset.chg === 'colmap') { const k = t.dataset.k; S.colmap[k] = k === 'header' ? t.value : Math.max(1, parseInt(t.value, 10) || 1); persist('colmap'); }
+    else if (t.dataset.file === 'backup') {
+      const f = t.files[0]; if (!f) return;
+      try {
+        const r = await restoreBackup(JSON.parse(await f.text()));
+        if (r) { toast('引き継ぎました(追加' + r.added + '件' + (r.same ? '・同じ受注に合流' : '・受注も引き継ぎ') + ')', 6000); go('home'); }
+      } catch (err) { toast('引き継げませんでした: ' + err.message, 6000); }
+    }
     else if (t.dataset.file) {
       const f = t.files[0]; if (!f) return;
       try {
@@ -600,12 +741,13 @@
   // ================= 起動 =================
   async function boot() {
     await DB.open();
-    for (const k of ['master', 'colors', 'colmap', 'orders', 'worker', 'assigned', 'picked', 'syncUrl', 'syncLog']) { const v = await DB.get(k); if (v != null) S[k] = v; }
+    for (const k of ['master', 'colors', 'colmap', 'orders', 'worker', 'assigned', 'picked', 'syncUrl', 'syncLog', 'lastBackup']) { const v = await DB.get(k); if (v != null) S[k] = v; }
     if (!Object.keys(S.colors).length) S.colors = Object.assign({}, DEF_COLORS);
     S.log = await DB.allLog();
+    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}   // 容量不足でもブラウザに消されにくくする
     go('home');
     if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(() => {});
   }
-  window.__app = { S, onCode, A, go, candidates, doneMap, buildOrders, parseCSV, parseJaNum, getP: () => P, setQty: n => { P.qty = n; }, confirmQty };
+  window.__app = { restoreBackup, backupObj, runChecks, printPaper, S, onCode, A, go, candidates, doneMap, buildOrders, parseCSV, parseJaNum, getP: () => P, setQty: n => { P.qty = n; }, confirmQty };
   boot();
 })();

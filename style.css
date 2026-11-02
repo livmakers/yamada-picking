@@ -46,7 +46,10 @@ td.n, th.n { text-align:right; }
 .tick.done .name { color:#777; text-decoration:line-through; }
 .tick .name { flex:1; font-size:24px; font-weight:800; }
 .tick .num { font-size:30px; font-weight:900; }
+#bkbar { background:#fff3cd; color:#5a3b00; padding:10px 14px; font-size:17px; font-weight:700; line-height:1.5; }
 #printArea { display:none; }
+#printArea table { border-collapse:collapse; }
+#printArea th, #printArea td { border:1px solid #555; padding:6px 8px; }
 @media print {
   #app, #toast { display:none !important; }
   #printArea { display:block; }
